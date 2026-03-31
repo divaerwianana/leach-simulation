@@ -23,7 +23,7 @@ def run():
     bs_y = st.number_input("Base Station Y", 0, int(area_y), int(area_y/2))
     base_station = (bs_x, bs_y)
 
-    frames = st.number_input("Jumlah Frame", 1000, 50000, 5000)
+    frames = st.number_input("Jumlah Frame", 1000, 200000, 5000)
     round_interval = st.number_input("Round Interval", 10, 500, 100)
     speed = st.slider("Kecepatan Animasi", 0.001, 0.1, 0.01)
 
