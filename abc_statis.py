@@ -1,258 +1,302 @@
-import streamlit as st
-import numpy as np
-import random
-import pandas as pd
-import matplotlib.pyplot as plt
-import time
-
 def run():
-    st.title("ABC Statis")
+    import streamlit as st
+    import numpy as np
+    import matplotlib.pyplot as plt
+    import random
+    import pandas as pd
+    import time
 
-    # =========================
-    # INPUT BEBAS
-    # =========================
-    num_nodes = st.number_input("Jumlah Node", 10, 1000, 100)
+    st.title("Simulasi ABC-LEACH Statis")
 
-    area_x = st.number_input("Luas Area X", 100, 2000, 1000)
-    area_y = st.number_input("Luas Area Y", 100, 2000, 1000)
+    # =============================
+    # INPUT (MANUAL)
+    # =============================
+    num_nodes = int(st.number_input("Jumlah Node", value=100, min_value=1))
 
-    initial_energy = st.number_input("Energy Awal", 0.01, 1.0, 0.5)
+    initial_energy = st.number_input("Energi Awal", value=0.5, min_value=0.1)
 
-    bs_x = st.number_input("Posisi BS X", 0, 2000, int(area_x/2))
-    bs_y = st.number_input("Posisi BS Y", 0, 2000, int(area_y/2))
-    base_station = (bs_x, bs_y)
+    area_x = int(st.number_input("Luas Area X", value=1000, min_value=100))
+    area_y = int(st.number_input("Luas Area Y", value=1000, min_value=100))
 
-    frames = st.number_input("Jumlah Frame", 1000, 200000, 5000)
-    round_interval = st.number_input("Round Interval", 10, 500, 100)
+    bs_x = int(st.number_input("Base Station X", value=area_x//2, min_value=0, max_value=area_x))
+    bs_y = int(st.number_input("Base Station Y", value=area_y//2, min_value=0, max_value=area_y))
 
-    speed = st.slider("Kecepatan Animasi", 0.001, 0.1, 0.01)
+    base_station = np.array([bs_x, bs_y])
 
-    # =========================
+    # =============================
+    # PARAMETER
+    # =============================
+    comm_range = 80
+    round_interval = 20
+    frames = 10000
+
+    E_elec = 50e-9
+    E_amp = 100e-12
+    packet_size = 4000
+
+    num_bees = 20
+    limit = 10
+    max_iter = 20
+    p = 0.1
+
+    # =============================
+    # INIT
+    # =============================
+    pos = np.random.rand(num_nodes,2) * [area_x,area_y]
+    velocity = np.zeros((num_nodes,2))
+    energy = np.ones(num_nodes)*initial_energy
+
+    # =============================
+    # DATA SIMPAN
+    # =============================
+    round_data = {
+        "round":[],
+        "alive_nodes":[],
+        "total_energy":[],
+        "PDR":[]
+    }
+
+    FND = HND = LND = None
+
+    # =============================
+    # FITNESS
+    # =============================
+    def fitness_ch(i):
+        if energy[i] <= 0: return 0
+        d = np.linalg.norm(pos[i]-base_station)
+        return energy[i]/(d+1e-6)
+
+    # =============================
+    # ABC
+    # =============================
+    def elect_cluster_heads():
+        alive = [i for i in range(num_nodes) if energy[i]>0]
+        if not alive: return []
+
+        food = random.sample(alive, min(num_bees,len(alive)))
+        fit = [fitness_ch(i) for i in food]
+        trial = [0]*len(food)
+
+        for _ in range(max_iter):
+            for i in range(len(food)):
+                cand = random.choice(alive)
+                f = fitness_ch(cand)
+                if f>fit[i]:
+                    food[i],fit[i],trial[i]=cand,f,0
+                else:
+                    trial[i]+=1
+
+            prob = np.array(fit)
+            prob = prob/np.sum(prob) if np.sum(prob)!=0 else np.ones(len(prob))/len(prob)
+
+            for _ in range(len(food)):
+                i = np.random.choice(len(food),p=prob)
+                cand = random.choice(alive)
+                f = fitness_ch(cand)
+                if f>fit[i]:
+                    food[i],fit[i],trial[i]=cand,f,0
+                else:
+                    trial[i]+=1
+
+            for i in range(len(food)):
+                if trial[i]>limit:
+                    food[i]=random.choice(alive)
+                    fit[i]=fitness_ch(food[i])
+                    trial[i]=0
+
+        n_ch = max(5,int(p*len(alive)))
+        idx = np.argsort(fit)[-n_ch:]
+        return list(set(food[i] for i in idx))
+
+    # =============================
+    # CLUSTER
+    # =============================
+    def assign_clusters(CH):
+        if not CH:
+            return np.zeros(num_nodes,dtype=int), np.full(num_nodes,np.inf)
+
+        d = np.linalg.norm(pos[:,None,:]-pos[CH][None,:,:],axis=2)
+        idx = np.argmin(d,axis=1)
+
+        return np.array(CH)[idx], d[np.arange(num_nodes),idx]
+
+    # =============================
     # RUN
-    # =========================
-    if st.button("Run Simulation"):
+    # =============================
+    if st.button("Mulai Simulasi"):
 
-        comm_range = 80.0
-
-        # Energi radio
-        E_elec = 50e-9
-        E_amp = 100e-12
-        packet_size = 4000
-
-        # ABC PARAM
-        num_bees = 20
-        limit = 10
-        max_iter = 20
-        p = 0.05
-
-        # =========================
-        # INISIALISASI
-        # =========================
-        pos = np.random.rand(num_nodes, 2) * [area_x, area_y]
-        energy = np.ones(num_nodes) * initial_energy
-
-        FND, HND, LND = None, None, None
-
-        total_packets_sent = 0
-        total_packets_received = 0
-
-        round_data = {
-            "round": [],
-            "alive_nodes": [],
-            "total_energy": [],
-            "avg_member_dist": [],
-            "packets_sent": [],
-            "packets_received": [],
-            "PDR": []
-        }
+        plot_area = st.empty()
 
         CH_index = []
-        assigned_ch = None
+        assigned_ch = np.zeros(num_nodes)
 
-        # =========================
-        # FUNCTION
-        # =========================
-        def fitness_ch(i):
-            if energy[i] <= 0:
-                return 0
-            d_bs = np.linalg.norm(pos[i] - np.array(base_station))
-            return energy[i] / (d_bs + 1e-6)
-
-        def elect_cluster_heads():
-            alive = [i for i in range(num_nodes) if energy[i] > 0]
-            if not alive:
-                return []
-
-            food = random.sample(alive, min(num_bees, len(alive)))
-            fit = [fitness_ch(i) for i in food]
-            trial = [0] * len(food)
-
-            for _ in range(max_iter):
-                for i in range(len(food)):
-                    cand = random.choice(alive)
-                    f = fitness_ch(cand)
-
-                    if f > fit[i]:
-                        food[i], fit[i], trial[i] = cand, f, 0
-                    else:
-                        trial[i] += 1
-
-            n_ch = max(1, int(p * len(alive)))
-            idx = np.argsort(fit)[-n_ch:]
-            return list(set(food[i] for i in idx))
-
-        def assign_clusters(CH):
-            if not CH:
-                return np.zeros(num_nodes, dtype=int), np.full(num_nodes, np.inf)
-
-            d = np.linalg.norm(pos[:, None, :] - pos[CH][None, :, :], axis=2)
-            idx = np.argmin(d, axis=1)
-
-            return np.array(CH)[idx], d[np.arange(num_nodes), idx]
-
-        # =========================
-        # VISUAL TEMPAT
-        # =========================
-        plot_placeholder = st.empty()
-
-        # =========================
-        # SIMULASI PER FRAME
-        # =========================
         for frame in range(frames):
 
-            # =====================
-            # UPDATE ROUND
-            # =====================
+            # # ================= GERAK NODE =================
+            # for i in range(num_nodes):
+            #     if energy[i] > 0:
+            #         pos[i] += velocity[i]*1.5
+
+            pos[:] = np.clip(pos,0,[area_x,area_y])
+
+            for i in range(num_nodes):
+                if energy[i] <= 0: continue
+                if pos[i,0]<=0 or pos[i,0]>=area_x:
+                    velocity[i,0]*=-1
+                if pos[i,1]<=0 or pos[i,1]>=area_y:
+                    velocity[i,1]*=-1
+
+            # ================= ROUND =================
             if frame % round_interval == 0:
 
-                round_id = frame // round_interval
+                r = frame // round_interval
+                alive_nodes = np.where(energy>0)[0]
 
-                alive_nodes = np.where(energy > 0)[0].tolist()
-
-                if len(alive_nodes) == 0:
-                    if LND is None:
-                        LND = round_id
+                if len(alive_nodes)==0:
+                    LND = r
                     break
 
+                if FND is None and len(alive_nodes)<num_nodes:
+                    FND = r
+                if HND is None and len(alive_nodes)<=num_nodes/2:
+                    HND = r
+                    
                 CH_index = elect_cluster_heads()
-                assigned_ch, dist_to_ch = assign_clusters(CH_index)
 
-                packets_sent = 0
-                packets_received = 0
+                alive_nodes = list(np.where(energy > 0)[0])
+                target_ch = max(5, int(p * len(alive_nodes)))
+
+                # ================= TAMBAH CH JIKA KURANG =================
+                if len(CH_index) < target_ch:
+                    tambahan = list(set(alive_nodes) - set(CH_index))
+
+                    if len(tambahan) > 0:
+                        extra = random.sample(
+                            tambahan,
+                            min(target_ch - len(CH_index), len(tambahan))
+                        )
+                        CH_index = list(set(CH_index + extra))
+
+                # ================= FIX: JANGAN SAMPAI KOSONG =================
+                if len(CH_index) == 0 and len(alive_nodes) > 0:
+                    CH_index = random.sample(alive_nodes, min(3, len(alive_nodes)))
+
+                assigned_ch, dist = assign_clusters(CH_index)
+
+                packets_sent=0
+                packets_received=0
 
                 for i in range(num_nodes):
 
-                    if energy[i] <= 0:
-                        continue
+                    if energy[i]<=0: continue
 
                     if i in CH_index:
-
-                        d_bs = np.linalg.norm(pos[i] - np.array(base_station))
-                        energy_tx = (E_elec * packet_size) + (E_amp * packet_size * (d_bs ** 2))
-
-                        energy[i] -= energy_tx
-                        packets_sent += 1
-                        packets_received += 1
-
+                        d_bs=np.linalg.norm(pos[i]-base_station)
+                        energy[i]-=(E_elec*packet_size)+(E_amp*packet_size*(d_bs**2))
+                        packets_sent+=1
+                        packets_received+=1
                     else:
-
                         ch = assigned_ch[i]
-                        d = dist_to_ch[i]
+                        if dist[i]<=comm_range and energy[ch]>0:
+                            energy[i]-=(E_elec*packet_size)+(E_amp*packet_size*(dist[i]**2))
+                            energy[ch]-=(E_elec*packet_size)
+                            packets_received+=1
+                        packets_sent+=1
 
-                        if d <= comm_range and energy[ch] > 0:
+                energy[energy<0]=0
 
-                            energy_tx = (E_elec * packet_size) + (E_amp * packet_size * (d ** 2))
-                            energy_rx = (E_elec * packet_size)
+                total_energy=np.sum(energy)
+                PDR = packets_received/packets_sent if packets_sent>0 else 0
 
-                            energy[i] -= energy_tx
-                            energy[ch] -= energy_rx
-
-                            packets_sent += 1
-                            packets_received += 1
-
-                        else:
-                            packets_sent += 1
-
-                energy[energy < 0] = 0
-
-                total_packets_sent += packets_sent
-                total_packets_received += packets_received
-
-                alive_count = np.count_nonzero(energy > 0)
-                total_energy = np.sum(energy)
-
-                PDR = packets_received / packets_sent if packets_sent > 0 else 0
-                avg_member_dist = np.mean(dist_to_ch[energy > 0]) if alive_count > 0 else 0
-
-                round_data["round"].append(round_id)
-                round_data["alive_nodes"].append(alive_count)
+                round_data["round"].append(r)
+                round_data["alive_nodes"].append(len(alive_nodes))
                 round_data["total_energy"].append(total_energy)
-                round_data["avg_member_dist"].append(avg_member_dist)
-                round_data["packets_sent"].append(total_packets_sent)
-                round_data["packets_received"].append(total_packets_received)
                 round_data["PDR"].append(PDR)
 
-                if FND is None and alive_count < num_nodes:
-                    FND = round_id
-
-                if HND is None and alive_count <= num_nodes / 2:
-                    HND = round_id
-
-            # =====================
-            # VISUAL PER FRAME
-            # =====================
+            # ================= PLOT ANIMASI =================
             fig, ax = plt.subplots(figsize=(6,6))
+            ax.set_xlim(0,area_x)
+            ax.set_ylim(0,area_y)
 
+            # ================= GARIS NODE → CH =================
+            for i in range(num_nodes):
+                if energy[i] <= 0 or i in CH_index:
+                    continue
+
+                ch = assigned_ch[i]
+
+                if energy[ch] > 0:
+                    ax.plot(
+                        [pos[i,0], pos[ch,0]],
+                        [pos[i,1], pos[ch,1]],
+                        color='gray',
+                        linewidth=0.5,
+                        alpha=0.3
+                    )
+
+            # ================= GARIS CH → BS =================
+            for ch in CH_index:
+                if energy[ch] <= 0:
+                    continue
+
+                ax.plot(
+                    [pos[ch,0], base_station[0]],
+                    [pos[ch,1], base_station[1]],
+                    color='orange',
+                    linewidth=1.2
+                )
+
+            # ================= NODE =================
             colors = [
-                'black' if energy[i] <= 0
+                'black' if energy[i]<=0
                 else 'red' if i in CH_index
-                else 'dodgerblue'
+                else 'blue'
                 for i in range(num_nodes)
             ]
 
-            ax.scatter(pos[:,0], pos[:,1], c=colors)
+            ax.scatter(pos[:,0],pos[:,1],c=colors,s=30)
 
-            # BS
-            ax.scatter(*base_station, marker='s', c='green')
+            # BASE STATION
+            ax.scatter(base_station[0],base_station[1],
+                    c='green',s=100,marker='s')
 
-            # GARIS
-            if assigned_ch is not None:
-                for i in range(num_nodes):
-                    if energy[i] > 0 and i not in CH_index:
-                        ch = assigned_ch[i]
-                        if energy[ch] > 0:
-                            ax.plot(
-                                [pos[i,0], pos[ch,0]],
-                                [pos[i,1], pos[ch,1]],
-                                color='gray', alpha=0.3, linewidth=0.5
-                            )
+            alive_count = np.count_nonzero(energy > 0)
+            total_energy = np.sum(energy)
 
-                for ch in CH_index:
-                    if energy[ch] > 0:
-                        ax.plot(
-                            [pos[ch,0], base_station[0]],
-                            [pos[ch,1], base_station[1]],
-                            color='orange', linewidth=1
-                        )
+            ax.set_title(
+                f"Frame {frame} | Alive: {alive_count}/{num_nodes} | Energy: {total_energy:.2f}"
+            )
+            plot_area.pyplot(fig)
+            plt.close(fig)
 
-            ax.set_xlim(0, area_x)
-            ax.set_ylim(0, area_y)
-            ax.set_title(f"Frame {frame}")
+            time.sleep(0.01)
 
-            plot_placeholder.pyplot(fig)
-
-            time.sleep(speed)
-
-        # =========================
-        # OUTPUT
-        # =========================
-        st.subheader("Hasil")
-        st.write("FND:", FND)
-        st.write("HND:", HND)
-        st.write("LND:", LND)
+        # =============================
+        # HASIL
+        # =============================
+        st.subheader("Hasil Simulasi")
+        st.write(f"FND: {FND}")
+        st.write(f"HND: {HND}")
+        st.write(f"LND: {LND}")
 
         df = pd.DataFrame(round_data)
 
-        st.line_chart(df["alive_nodes"])
-        st.line_chart(df["total_energy"])
-        st.line_chart(df["PDR"])
+        # Grafik
+        st.subheader("Grafik Alive Nodes")
+        fig1, ax1 = plt.subplots()
+        ax1.plot(df["round"], df["alive_nodes"])
+        st.pyplot(fig1)
+
+        st.subheader("Grafik Total Energy")
+        fig2, ax2 = plt.subplots()
+        ax2.plot(df["round"], df["total_energy"])
+        st.pyplot(fig2)
+
+        st.subheader("Grafik PDR")
+        fig3, ax3 = plt.subplots()
+        ax3.plot(df["round"], df["PDR"])
+        st.pyplot(fig3)
+
+        # Download CSV
+        csv = df.to_csv(index=False).encode('utf-8')
+        st.download_button("Download CSV", csv, "hasil_abc_leach.csv")
